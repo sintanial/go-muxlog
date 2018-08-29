@@ -21,13 +21,11 @@ const (
 
 var DefaultFormat = `%raddr% > |%mtd%| %uri% %reqh% %ua% < %rescode%(%resst%) %resb% %resh%`
 
-type Logger interface {
-	Log(msg string, err error)
-}
+type LoggingFunc func(msg string, status int, err error)
 
 type ServeMux struct {
 	format string
-	logger Logger
+	logger LoggingFunc
 	mux    *http.ServeMux
 }
 
@@ -36,10 +34,10 @@ func NewDefault() *ServeMux {
 }
 
 func New(mux *http.ServeMux) *ServeMux {
-	return NewLogger(mux, nil)
+	return NewWithLogger(mux, nil)
 }
 
-func NewLogger(mux *http.ServeMux, log Logger) *ServeMux {
+func NewWithLogger(mux *http.ServeMux, log LoggingFunc) *ServeMux {
 	return &ServeMux{
 		format: DefaultFormat,
 		logger: log,
@@ -80,21 +78,21 @@ func (self *ServeMux) log(rw *responseWriter, r *http.Request, err error) {
 	var msg string
 
 	msg = self.format
-	msg = strings.Replace(self.format, TokenRemoteAddr, r.RemoteAddr, -1)
-	msg = strings.Replace(self.format, TokenMethod, r.Method, -1)
-	msg = strings.Replace(self.format, TokenRequestURI, r.RequestURI, -1)
-	msg = strings.Replace(self.format, TokenRequestHeaders, fmt.Sprintf("%+v", r.Header), -1)
-	msg = strings.Replace(self.format, TokenUserAgent, r.UserAgent(), -1)
-	msg = strings.Replace(self.format, TokenResponseCode, strconv.Itoa(rw.status), -1)
-	msg = strings.Replace(self.format, TokenResponseStatus, http.StatusText(rw.status), -1)
-	msg = strings.Replace(self.format, TokenResponseBytes, strconv.Itoa(rw.bytes), -1)
-	msg = strings.Replace(self.format, TokenResponseHeaders, fmt.Sprintf("%+v", rw.Header()), -1)
+	msg = strings.Replace(msg, TokenRemoteAddr, r.RemoteAddr, -1)
+	msg = strings.Replace(msg, TokenMethod, r.Method, -1)
+	msg = strings.Replace(msg, TokenRequestURI, r.RequestURI, -1)
+	msg = strings.Replace(msg, TokenRequestHeaders, fmt.Sprintf("%+v", r.Header), -1)
+	msg = strings.Replace(msg, TokenUserAgent, r.UserAgent(), -1)
+	msg = strings.Replace(msg, TokenResponseCode, strconv.Itoa(rw.status), -1)
+	msg = strings.Replace(msg, TokenResponseStatus, http.StatusText(rw.status), -1)
+	msg = strings.Replace(msg, TokenResponseBytes, strconv.Itoa(rw.bytes), -1)
+	msg = strings.Replace(msg, TokenResponseHeaders, fmt.Sprintf("%+v", rw.Header()), -1)
 
-	self.logger.Log(msg, err)
+	self.logger(msg, rw.status, err)
 }
 
 // set logger
-func (self *ServeMux) SetLogger(l Logger) {
+func (self *ServeMux) SetLogger(l LoggingFunc) {
 	self.logger = l
 }
 
