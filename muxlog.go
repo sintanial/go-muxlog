@@ -11,6 +11,7 @@ const (
 	TokenRemoteAddr      = "%raddr%"
 	TokenMethod          = "%mtd%"
 	TokenRequestURI      = "%uri%"
+	TokenRequestBytes    = "%reqb%"
 	TokenRequestHeaders  = "%reqh%"
 	TokenUserAgent       = "%ua%"
 	TokenResponseCode    = "%rescode%"
@@ -19,9 +20,9 @@ const (
 	TokenResponseHeaders = "%resh%"
 )
 
-var DefaultFormat = `%raddr% > |%mtd%| %uri% %reqh% %ua% < %rescode%(%resst%) %resb% %resh%`
+var DefaultFormat = `%raddr% > |%mtd%| %uri% %reqb% < %rescode%(%resst%) %resb%; "%ua%"`
 
-type LoggingFunc func(msg string, status int, err error)
+type LoggingFunc func(rw *ResponseWriter, msg string, err error)
 
 type ServeMux struct {
 	format string
@@ -45,35 +46,45 @@ func NewWithLogger(mux *http.ServeMux, log LoggingFunc) *ServeMux {
 	}
 }
 
-type responseWriter struct {
+type ResponseWriter struct {
 	http.ResponseWriter
-	status int
-	bytes  int
+
+	ResponseStatusCode int
+	WritedBytes        int
+	IsSended           bool
 }
 
-func (self *responseWriter) WriteHeader(status int) {
-	self.status = status
+func (self *ResponseWriter) WriteHeader(status int) {
+	self.ResponseStatusCode = status
+	self.IsSended = true
 	self.ResponseWriter.WriteHeader(status)
 }
 
-func (self *responseWriter) Write(b []byte) (int, error) {
+func (self *ResponseWriter) Write(b []byte) (int, error) {
 	n, err := self.ResponseWriter.Write(b)
-	self.bytes = n
-
+	self.WritedBytes = n
+	self.IsSended = true
 	return n, err
 }
 
 func (self *ServeMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request) error) {
 	self.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-		rw := &responseWriter{ResponseWriter: w}
+		rw := &ResponseWriter{ResponseWriter: w}
 		self.log(rw, r, handler(rw, r))
 	})
 }
 
-func (self *ServeMux) log(rw *responseWriter, r *http.Request, err error) {
+func (self *ServeMux) log(rw *ResponseWriter, r *http.Request, err error) {
 	if self.logger == nil || self.format == "" {
 		return
 	}
+
+	status := http.StatusOK
+	if rw.ResponseStatusCode != 0 {
+		status = rw.ResponseStatusCode
+	}
+	userAgent := r.UserAgent()
+	r.Header.Del("User-Agent")
 
 	var msg string
 
@@ -81,14 +92,15 @@ func (self *ServeMux) log(rw *responseWriter, r *http.Request, err error) {
 	msg = strings.Replace(msg, TokenRemoteAddr, r.RemoteAddr, -1)
 	msg = strings.Replace(msg, TokenMethod, r.Method, -1)
 	msg = strings.Replace(msg, TokenRequestURI, r.RequestURI, -1)
+	msg = strings.Replace(msg, TokenRequestBytes, strconv.Itoa(int(r.ContentLength)), -1)
 	msg = strings.Replace(msg, TokenRequestHeaders, fmt.Sprintf("%+v", r.Header), -1)
-	msg = strings.Replace(msg, TokenUserAgent, r.UserAgent(), -1)
-	msg = strings.Replace(msg, TokenResponseCode, strconv.Itoa(rw.status), -1)
-	msg = strings.Replace(msg, TokenResponseStatus, http.StatusText(rw.status), -1)
-	msg = strings.Replace(msg, TokenResponseBytes, strconv.Itoa(rw.bytes), -1)
+	msg = strings.Replace(msg, TokenUserAgent, userAgent, -1)
+	msg = strings.Replace(msg, TokenResponseCode, strconv.Itoa(status), -1)
+	msg = strings.Replace(msg, TokenResponseStatus, http.StatusText(status), -1)
+	msg = strings.Replace(msg, TokenResponseBytes, strconv.Itoa(rw.WritedBytes), -1)
 	msg = strings.Replace(msg, TokenResponseHeaders, fmt.Sprintf("%+v", rw.Header()), -1)
 
-	self.logger(msg, rw.status, err)
+	self.logger(rw, msg, err)
 }
 
 // set logger
