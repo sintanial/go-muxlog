@@ -5,6 +5,8 @@ import (
 	"strings"
 	"strconv"
 	"fmt"
+	"bytes"
+	"io/ioutil"
 )
 
 const (
@@ -22,12 +24,65 @@ const (
 
 var DefaultFormat = `%raddr% > |%mtd%| %uri% %reqb% < %rescode%(%resst%) %resb%; "%ua%"`
 
-type LoggingFunc func(rw *ResponseWriter, msg string, err error)
+type LoggingFunc func(w *ResponseRecorder, r *RequestRecorder, msg string, err error)
+
+type RequestRecorder struct {
+	*http.Request
+	Body *bytes.Buffer
+}
+
+type ResponseRecorder struct {
+	w http.ResponseWriter
+
+	StatusCode int
+	BodyBytes  int
+	Body       *bytes.Buffer
+
+	isResponded bool
+
+	isNeedLogBody bool
+}
+
+func (self *ResponseRecorder) Header() http.Header {
+	return self.w.Header()
+}
+
+func (self *ResponseRecorder) WriteHeader(status int) {
+	if self.isResponded {
+		return
+	}
+
+	self.StatusCode = status
+	self.isResponded = true
+
+	self.w.WriteHeader(status)
+}
+
+func (self *ResponseRecorder) Write(b []byte) (int, error) {
+	if self.isResponded {
+		return 0, nil
+	}
+
+	if self.Body == nil && self.isNeedLogBody {
+		self.Body = bytes.NewBuffer(b)
+	}
+
+	n, err := self.w.Write(b)
+	self.BodyBytes = n
+
+	self.StatusCode = http.StatusOK
+	self.isResponded = true
+
+	return n, err
+}
 
 type ServeMux struct {
 	format string
 	logger LoggingFunc
 	mux    *http.ServeMux
+
+	isNeedLogRequestBody  bool
+	isNeedLogResponseBody bool
 }
 
 func NewDefault() *ServeMux {
@@ -46,42 +101,49 @@ func NewWithLogger(mux *http.ServeMux, log LoggingFunc) *ServeMux {
 	}
 }
 
-type ResponseWriter struct {
-	http.ResponseWriter
-
-	ResponseStatusCode int
-	WritedBytes        int
-	IsSended           bool
+type readerWithErr struct {
+	err error
 }
 
-func (self *ResponseWriter) WriteHeader(status int) {
-	self.ResponseStatusCode = status
-	self.IsSended = true
-	self.ResponseWriter.WriteHeader(status)
-}
-
-func (self *ResponseWriter) Write(b []byte) (int, error) {
-	n, err := self.ResponseWriter.Write(b)
-	self.WritedBytes = n
-	self.IsSended = true
-	return n, err
+func (self readerWithErr) Read(b []byte) (int, error) {
+	return 0, self.err
 }
 
 func (self *ServeMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request) error) {
 	self.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
-		rw := &ResponseWriter{ResponseWriter: w}
-		self.log(rw, r, handler(rw, r))
+		resr := &ResponseRecorder{
+			w: w,
+
+			isNeedLogBody: self.isNeedLogResponseBody,
+		}
+
+		reqr := &RequestRecorder{
+			Request: r,
+		}
+
+		if self.isNeedLogRequestBody {
+			data, err := ioutil.ReadAll(r.Body)
+			if err == nil {
+				r.Body = ioutil.NopCloser(bytes.NewReader(data))
+				reqr.Body = bytes.NewBuffer(data)
+			} else {
+				r.Body = ioutil.NopCloser(readerWithErr{err})
+			}
+		}
+
+		err := handler(resr, r)
+		self.log(resr, reqr, err)
 	})
 }
 
-func (self *ServeMux) log(rw *ResponseWriter, r *http.Request, err error) {
+func (self *ServeMux) log(w *ResponseRecorder, r *RequestRecorder, err error) {
 	if self.logger == nil || self.format == "" {
 		return
 	}
 
 	status := http.StatusOK
-	if rw.ResponseStatusCode != 0 {
-		status = rw.ResponseStatusCode
+	if w.StatusCode != 0 {
+		status = w.StatusCode
 	}
 	userAgent := r.UserAgent()
 	r.Header.Del("User-Agent")
@@ -97,10 +159,10 @@ func (self *ServeMux) log(rw *ResponseWriter, r *http.Request, err error) {
 	msg = strings.Replace(msg, TokenUserAgent, userAgent, -1)
 	msg = strings.Replace(msg, TokenResponseCode, strconv.Itoa(status), -1)
 	msg = strings.Replace(msg, TokenResponseStatus, http.StatusText(status), -1)
-	msg = strings.Replace(msg, TokenResponseBytes, strconv.Itoa(rw.WritedBytes), -1)
-	msg = strings.Replace(msg, TokenResponseHeaders, fmt.Sprintf("%+v", rw.Header()), -1)
+	msg = strings.Replace(msg, TokenResponseBytes, strconv.Itoa(w.BodyBytes), -1)
+	msg = strings.Replace(msg, TokenResponseHeaders, fmt.Sprintf("%+v", w.Header()), -1)
 
-	self.logger(rw, msg, err)
+	self.logger(w, r, msg, err)
 }
 
 // set logger
@@ -109,9 +171,17 @@ func (self *ServeMux) SetLogger(l LoggingFunc) {
 }
 
 // set logging format
-// todo: prepare result format, needed for improve performan (replace strings.Replace to Tokenizer)
+// todo: prepare result format, needed for improve performance (replace strings.Replace to Tokenizer)
 func (self *ServeMux) SetFormat(f string) {
 	self.format = f
+}
+
+func (self *ServeMux) SetLogRequestBody(b bool) {
+	self.isNeedLogRequestBody = true
+}
+
+func (self *ServeMux) SetLogResponse(b bool) {
+	self.isNeedLogResponseBody = true
 }
 
 func (self *ServeMux) Mux() *http.ServeMux {
