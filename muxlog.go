@@ -109,7 +109,14 @@ func (self readerWithErr) Read(b []byte) (int, error) {
 	return 0, self.err
 }
 
-func (self *ServeMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request) error) {
+func (self *ServeMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
+	self.HandleFuncError(pattern, func(w http.ResponseWriter, r *http.Request) error {
+		handler(w, r)
+		return nil
+	})
+}
+
+func (self *ServeMux) HandleFuncError(pattern string, handler func(http.ResponseWriter, *http.Request) error) {
 	self.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		resr := &ResponseRecorder{
 			w: w,
